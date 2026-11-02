@@ -1,5 +1,8 @@
-import { useState } from "react";
-import { Home, ReceiptText, Sparkles, Landmark, Ship, ArrowLeft } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
+import { Home, ReceiptText, Sparkles, Landmark, Ship, ArrowLeft, LogOut, Loader2 } from "lucide-react";
+import LoginPage from "@/pages/LoginPage";
+import { me, logout, onUnauthorized, type AuthUser } from "@/lib/auth";
+import { clearQueryCache } from "@/providers/trpc";
 import { Toaster } from "@/components/ui/sonner";
 import HomePage from "@/pages/HomePage";
 import BillsPage from "@/pages/BillsPage";
@@ -20,6 +23,58 @@ const TABS: Array<{ key: TabKey; label: string; icon: typeof Home }> = [
 ];
 
 export default function App() {
+  const [user, setUser] = useState<AuthUser | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
+
+  useEffect(() => {
+    let alive = true;
+    me()
+      .then((u) => alive && setUser(u))
+      .catch(() => alive && setUser(null))
+      .finally(() => alive && setAuthLoading(false));
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const handleSignedOut = useCallback(() => {
+    clearQueryCache();
+    setUser(null);
+  }, []);
+
+  useEffect(() => onUnauthorized(handleSignedOut), [handleSignedOut]);
+
+  if (authLoading) {
+    return (
+      <div className="flex min-h-dvh items-center justify-center bg-background text-muted-foreground">
+        <Loader2 className="h-6 w-6 animate-spin" />
+      </div>
+    );
+  }
+  if (!user) {
+    return (
+      <>
+        <LoginPage
+          onLoggedIn={(u) => {
+            clearQueryCache();
+            setUser(u);
+          }}
+        />
+        <Toaster position="top-center" richColors />
+      </>
+    );
+  }
+  return (
+    <AuthedApp
+      onSignOut={async () => {
+        await logout();
+        handleSignedOut();
+      }}
+    />
+  );
+}
+
+function AuthedApp({ onSignOut }: { onSignOut: () => void }) {
   const [tab, setTab] = useState<TabKey>("home");
   const [agentSeed, setAgentSeed] = useState<string | null>(null);
   const [financeSeg, setFinanceSeg] = useState<FinanceSeg>("fx");
@@ -40,6 +95,14 @@ export default function App() {
     <div className="min-h-dvh bg-background">
       {/* 桌面端居中成 App 栏，移动端全宽 */}
       <div className="relative mx-auto flex min-h-dvh w-full max-w-md flex-col bg-background shadow-[0_0_0_1px_hsl(var(--border))] lg:my-6 lg:min-h-[calc(100dvh-3rem)] lg:rounded-[28px] lg:shadow-[0_24px_60px_-24px_rgba(10,37,64,0.35)] lg:overflow-hidden">
+        <button
+          onClick={onSignOut}
+          className="absolute right-2 top-2 z-30 flex h-8 w-8 items-center justify-center rounded-full bg-black/20 text-white/80 backdrop-blur transition active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          aria-label="退出登录"
+          title="退出登录"
+        >
+          <LogOut className="h-4 w-4" />
+        </button>
         <main className="flex-1 overflow-y-auto pb-24">
           {tab === "home" && (
             <HomePage
