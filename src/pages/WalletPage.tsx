@@ -1,7 +1,6 @@
 import { useState } from "react";
 import { trpc } from "@/providers/trpc";
 import { fmtMoney, fmtDateTime } from "@/lib/format";
-import { PageHeader } from "@/components/common";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -24,7 +23,6 @@ type Props = { openAgent: (prompt?: string) => void };
 export default function WalletPage({ openAgent }: Props) {
   return (
     <div>
-      <PageHeader title="卡包与守护" sub="卡片管理 · 生日守护 · 收款任务" />
       <CardsSection />
       <GuardSection openAgent={openAgent} />
       <AASection />
