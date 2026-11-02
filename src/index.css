@@ -4,36 +4,43 @@
 
 @layer base {
   :root {
-    --background: 60 4.8% 96.5%;
-    --foreground: 228 14% 12%;
+    --background: 220 11% 96.8%;
+    --foreground: 213 60% 12%;
     --card: 0 0% 100%;
-    --card-foreground: 228 14% 12%;
+    --card-foreground: 213 60% 12%;
     --popover: 0 0% 100%;
-    --popover-foreground: 228 14% 12%;
-    --primary: 219 100% 47%;
-    --primary-foreground: 0 0% 100%;
-    --secondary: 220 14% 94%;
-    --secondary-foreground: 228 14% 12%;
-    --muted: 220 14% 94%;
-    --muted-foreground: 228 7% 42%;
-    --accent: 219 90% 96%;
-    --accent-foreground: 219 100% 40%;
+    --popover-foreground: 213 60% 12%;
+    /* 深海军蓝主品牌色 */
+    --primary: 210 73% 15%;
+    --primary-foreground: 45 60% 92%;
+    --secondary: 218 18% 92%;
+    --secondary-foreground: 213 60% 14%;
+    --muted: 218 18% 92%;
+    --muted-foreground: 216 12% 42%;
+    --accent: 44 62% 90%;
+    --accent-foreground: 42 70% 28%;
     --destructive: 4 76% 50%;
     --destructive-foreground: 0 0% 100%;
     --success: 152 60% 36%;
     --warning: 36 92% 44%;
-    --border: 220 12% 89%;
-    --input: 220 12% 85%;
-    --ring: 219 100% 47%;
+    /* 品牌扩展：深海军蓝 / 哑光金 */
+    --navy: 210 73% 15%;
+    --navy-light: 208 55% 27%;
+    --gold: 45 68% 47%;
+    --gold-light: 44 85% 72%;
+    --gold-foreground: 44 90% 88%;
+    --border: 219 16% 88%;
+    --input: 219 16% 84%;
+    --ring: 210 73% 25%;
     --radius: 0.75rem;
     --sidebar-background: 0 0% 98%;
     --sidebar-foreground: 240 5.3% 26.1%;
-    --sidebar-primary: 219 100% 47%;
-    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-primary: 210 73% 15%;
+    --sidebar-primary-foreground: 45 60% 92%;
     --sidebar-accent: 240 4.8% 95.9%;
     --sidebar-accent-foreground: 240 5.9% 10%;
     --sidebar-border: 220 13% 91%;
-    --sidebar-ring: 219 100% 47%;
+    --sidebar-ring: 210 73% 25%;
   }
 
   .dark {
@@ -60,8 +67,8 @@
     --sidebar-foreground: 240 4.8% 95.9%;
     --sidebar-primary: 224.3 76.3% 48%;
     --sidebar-primary-foreground: 0 0% 100%;
-    --sidebar-accent: 240 3.7% 15.9%;
-    --sidebar-accent-foreground: 240 4.8% 95.9%;
+    --sidebar-accent: 240 4.8% 95.9%;
+    --sidebar-accent-foreground: 240 5.9% 10%;
     --sidebar-border: 240 3.7% 15.9%;
     --sidebar-ring: 217.2 91.2% 59.8%;
   }
@@ -79,6 +86,31 @@
   }
 }
 
+@layer components {
+  /* 品牌 hero：深海军蓝渐变 + 细腻经纬弧线（呼应跨境航线） */
+  .hero-navy {
+    background:
+      radial-gradient(ellipse 90% 65% at 85% -10%, hsl(208 60% 32% / 0.9), transparent 60%),
+      radial-gradient(ellipse 70% 55% at 10% 110%, hsl(206 55% 24% / 0.85), transparent 65%),
+      linear-gradient(150deg, hsl(212 78% 13%), hsl(210 73% 15%) 45%, hsl(208 60% 22%));
+    color: hsl(45 60% 93%);
+  }
+  /* 深色卡片上的次级文字：奶油金 */
+  .on-navy-sub {
+    color: hsl(44 85% 80% / 0.85);
+  }
+  /* 卡片入场：scale(0.95) + 上浮 */
+  .card-in {
+    animation: card-in 0.28s cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+  /* 抬升阴影 */
+  .card-elevated {
+    box-shadow:
+      0 1px 2px rgba(10, 37, 64, 0.06),
+      0 8px 24px -12px rgba(10, 37, 64, 0.14);
+  }
+}
+
 @layer utilities {
   .num {
     font-variant-numeric: tabular-nums;
@@ -87,8 +119,25 @@
   .safe-bottom {
     padding-bottom: calc(env(safe-area-inset-bottom) + 0.5rem);
   }
+  /* 英文小标签：大写 + 宽字距 */
+  .kicker {
+    text-transform: uppercase;
+    letter-spacing: 0.18em;
+    font-size: 10px;
+    font-weight: 600;
+  }
 }
 
+@keyframes card-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
 @keyframes msg-in {
   from {
     opacity: 0;
@@ -119,6 +168,30 @@
     opacity: 0;
   }
 }
+/* 汇率跑马灯 */
+@keyframes ticker-scroll {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
+}
+/* 中央 AI 按钮的金色光环 */
+@keyframes ring-pulse {
+  0% {
+    box-shadow: 0 0 0 0 hsl(45 68% 47% / 0.45);
+  }
+  70% {
+    box-shadow: 0 0 0 12px hsl(45 68% 47% / 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 hsl(45 68% 47% / 0);
+  }
+}
+.ticker-track {
+  animation: ticker-scroll 30s linear infinite;
+}
 .msg-in {
   animation: msg-in 0.24s ease-out both;
 }
@@ -128,10 +201,16 @@
 .caret-blink {
   animation: caret-blink 0.9s steps(1) infinite;
 }
+.ring-pulse {
+  animation: ring-pulse 2.4s ease-out infinite;
+}
 @media (prefers-reduced-motion: reduce) {
   .msg-in,
   .pulse-dot,
-  .caret-blink {
+  .caret-blink,
+  .ticker-track,
+  .ring-pulse,
+  .card-in {
     animation: none;
   }
 }
