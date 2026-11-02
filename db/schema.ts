@@ -169,3 +169,122 @@ export const agentMessages = mysqlTable("agent_messages", {
   tools: text("tools"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
+
+// ============ 多币种钱包（跨境电商） ============
+export const fxWallets = mysqlTable("fx_wallets", {
+  id: serial("id").primaryKey(),
+  currency: varchar("currency", { length: 3 }).notNull(), // USD/EUR/GBP/JPY/HKD
+  // 外币余额，单位：外币最小单位（如美分）
+  balanceForeignCents: int("balance_foreign_cents").notNull().default(0),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+// ============ 外汇牌价 ============
+export const fxRates = mysqlTable("fx_rates", {
+  id: serial("id").primaryKey(),
+  pair: varchar("pair", { length: 10 }).notNull(), // USDCNY
+  currency: varchar("currency", { length: 3 }).notNull(),
+  // 1 外币 = rateBps/10000 人民币；buy=银行买入价（客户结汇），sell=银行卖出价（客户购汇）
+  buyRateBps: int("buy_rate_bps").notNull(),
+  sellRateBps: int("sell_rate_bps").notNull(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+// ============ 外汇衍生品合约（远期锁汇/期权/掉期） ============
+export const fxContracts = mysqlTable("fx_contracts", {
+  id: serial("id").primaryKey(),
+  type: mysqlEnum("type", ["forward", "option", "swap"]).notNull(),
+  currency: varchar("currency", { length: 3 }).notNull(),
+  // 名义外币本金，单位：外币最小单位
+  foreignAmountCents: int("foreign_amount_cents").notNull(),
+  // 锁定汇率，1 外币 = lockedRateBps/10000 人民币
+  lockedRateBps: int("locked_rate_bps").notNull(),
+  // 结汇=sell_foreign（卖外币收人民币），购汇=buy_foreign
+  direction: mysqlEnum("direction", ["sell_foreign", "buy_foreign"])
+    .notNull()
+    .default("sell_foreign"),
+  // 远期保证金（人民币分，名义本金等值的 5%）
+  marginCents: int("margin_cents").notNull().default(0),
+  // 期权费（人民币分，名义本金的 1.5%）
+  premiumCents: int("premium_cents").notNull().default(0),
+  expiresAt: timestamp("expires_at").notNull(),
+  status: mysqlEnum("status", ["active", "settled", "cancelled"])
+    .notNull()
+    .default("active"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// ============ 供应链金融产品 ============
+export const scfProducts = mysqlTable("scf_products", {
+  id: serial("id").primaryKey(),
+  code: varchar("code", { length: 32 }).notNull(), // ORDER_LOAN / WAREHOUSE / TAX_REBATE / CREDIT_INS
+  name: varchar("name", { length: 64 }).notNull(),
+  // 年化利率，基点（万分之一）
+  rateBps: int("rate_bps").notNull(),
+  maxAmountCents: int("max_amount_cents").notNull(),
+  termDays: int("term_days").notNull(),
+  tags: varchar("tags", { length: 128 }),
+  description: varchar("description", { length: 255 }),
+});
+
+// ============ 供应链融资（在途贷款） ============
+export const scfLoans = mysqlTable("scf_loans", {
+  id: serial("id").primaryKey(),
+  productId: bigint("product_id", { mode: "number", unsigned: true }).notNull(),
+  amountCents: int("amount_cents").notNull(),
+  rateBps: int("rate_bps").notNull(),
+  purpose: varchar("purpose", { length: 255 }),
+  relatedRef: varchar("related_ref", { length: 64 }), // 关联平台订单号 / 报关单号
+  status: mysqlEnum("status", ["disbursed", "repaid", "overdue"])
+    .notNull()
+    .default("disbursed"),
+  appliedAt: timestamp("applied_at").notNull().defaultNow(),
+  dueAt: timestamp("due_at").notNull(),
+  repaidAt: timestamp("repaid_at"),
+});
+
+// ============ 物流运单（外贸一体化） ============
+export const shipments = mysqlTable("shipments", {
+  id: serial("id").primaryKey(),
+  trackingNo: varchar("tracking_no", { length: 32 }).notNull(),
+  carrier: varchar("carrier", { length: 64 }).notNull(), // 云途/递四方/燕文/顺丰国际
+  platform: varchar("platform", { length: 32 }).notNull(), // Amazon 北美站 / 速卖通 / Temu / 独立站
+  destination: varchar("destination", { length: 64 }).notNull(),
+  goodsDesc: varchar("goods_desc", { length: 128 }),
+  weightKg: varchar("weight_kg", { length: 16 }),
+  freightCents: int("freight_cents").notNull().default(0),
+  status: mysqlEnum("status", ["label_created", "in_transit", "customs_clearance", "delivered", "exception"])
+    .notNull()
+    .default("label_created"),
+  // JSON: [{ time, text, location }]
+  milestones: text("milestones").notNull(),
+  etaAt: timestamp("eta_at"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// ============ 海关报关单 ============
+export const customsDeclarations = mysqlTable("customs_declarations", {
+  id: serial("id").primaryKey(),
+  declNo: varchar("decl_no", { length: 32 }).notNull(),
+  port: varchar("port", { length: 64 }).notNull(),
+  goodsDesc: varchar("goods_desc", { length: 128 }),
+  valueUsdCents: int("value_usd_cents").notNull(),
+  status: mysqlEnum("status", ["declared", "inspecting", "released", "closed"])
+    .notNull()
+    .default("declared"),
+  declaredAt: timestamp("declared_at").notNull().defaultNow(),
+  releasedAt: timestamp("released_at"),
+});
+
+// ============ 出口退税 ============
+export const taxRefunds = mysqlTable("tax_refunds", {
+  id: serial("id").primaryKey(),
+  period: varchar("period", { length: 8 }).notNull(), // 2025-09
+  amountCents: int("amount_cents").notNull(),
+  status: mysqlEnum("status", ["filing", "reviewing", "approved", "paid"])
+    .notNull()
+    .default("filing"),
+  progress: int("progress").notNull().default(0), // 0-100
+  declNo: varchar("decl_no", { length: 32 }),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
