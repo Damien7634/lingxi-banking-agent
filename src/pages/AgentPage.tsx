@@ -22,16 +22,30 @@ const TOOL_LABEL: Record<string, string> = {
   manageCard: "卡片操作",
   setupBirthdayGuard: "创建生日守护",
   listScenarios: "查询守护任务",
+  getFxRates: "查询实时牌价",
+  getFxWallets: "查询多币种钱包",
+  getFxExposure: "分析汇率敞口",
+  lockForwardRate: "远期锁汇",
+  buyFxOption: "购买外汇期权",
+  listFxContracts: "查询避险合约",
+  listScfProducts: "查询融资产品",
+  applyScfLoan: "申请供应链融资",
+  repayScfLoan: "归还融资",
+  listScfLoans: "查询融资记录",
+  listShipments: "查询物流运单",
+  trackShipment: "跟踪运单轨迹",
+  listCustoms: "查询报关单",
+  getTaxRefunds: "查询退税进度",
 };
 
 const SUGGESTIONS = [
-  "帮我看看这个月账单，有没有异常交易？",
-  "给老婆转 520，备注生日快乐",
-  "每周一早上给房东周敏定时转 4500 房租",
-  "昨晚聚餐 1032 块，和王强、陈晨、刘洋 AA",
-  "根据我的风险测评推荐理财，对比后再申购",
+  "帮我分析一下美元敞口，黑五前要不要锁汇？",
+  "用亚马逊订单贷借 15 万备货，年化多少？",
+  "查一下运单 YT88362012 到哪了",
+  "10 月的出口退税办到哪一步了？",
+  "这个月账单有没有异常交易？",
   "帮我给爱人设置生日守护",
-  "信用卡丢了，帮我挂失",
+  "给李厂长转 9.8 万货款，备注宠物用品尾款",
 ];
 
 export default function AgentPage({ seed, onSeedConsumed }: { seed: string | null; onSeedConsumed: () => void }) {
