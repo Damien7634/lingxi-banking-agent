@@ -39,3 +39,6 @@ build/
 # Test coverage
 coverage/
 .nyc_output/
+
+# local demo credentials
+server/seed-credentials.txt
