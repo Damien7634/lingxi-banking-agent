@@ -13,9 +13,17 @@ import {
   scenarios,
   giftOrders,
   agentMessages,
+  fxWallets,
+  fxRates,
+  fxContracts,
+  scfProducts,
+  scfLoans,
+  shipments,
+  customsDeclarations,
+  taxRefunds,
 } from "./schema";
 
-const NOW = new Date("2026-11-01T09:30:00+08:00");
+const NOW = new Date("2026-11-02T09:30:00+08:00");
 const day = (offset: number, h = 12, m = 0) => {
   const d = new Date(NOW);
   d.setDate(d.getDate() + offset);
@@ -28,6 +36,14 @@ async function main() {
 
   // 清空旧数据（演示种子脚本，幂等重跑）
   await db.delete(agentMessages);
+  await db.delete(taxRefunds);
+  await db.delete(customsDeclarations);
+  await db.delete(shipments);
+  await db.delete(scfLoans);
+  await db.delete(scfProducts);
+  await db.delete(fxContracts);
+  await db.delete(fxRates);
+  await db.delete(fxWallets);
   await db.delete(giftOrders);
   await db.delete(scenarios);
   await db.delete(riskProfiles);
@@ -40,322 +56,405 @@ async function main() {
   await db.delete(transactions);
   await db.delete(accounts);
 
-  // ---------- 账户 ----------
+  // ============ 主账户：跨境电商卖家 ============
+  // 锁定部分 = 远期锁汇保证金 ¥17,712.50
   await db.insert(accounts).values({
-    holderName: "张伟",
-    balanceCents: 8652040, // ¥86,520.40
-    lockedCents: 0,
+    holderName: "陈航 · 跨洋科技",
+    balanceCents: 48652040,
+    lockedCents: 1771250,
   });
 
-  // ---------- 收款人 ----------
-  await db.insert(contacts).values([
+  // ============ 多币种钱包 ============
+  await db.insert(fxWallets).values([
+    { currency: "USD", balanceForeignCents: 6230050 }, // $62,300.50
+    { currency: "EUR", balanceForeignCents: 1852000 }, // €18,520.00
+  ]);
+
+  // ============ 外汇牌价（1 外币 = rateBps/10000 CNY） ============
+  await db.insert(fxRates).values([
+    { pair: "USDCNY", currency: "USD", buyRateBps: 70850, sellRateBps: 71130 },
+    { pair: "EURCNY", currency: "EUR", buyRateBps: 77200, sellRateBps: 77560 },
+    { pair: "GBPCNY", currency: "GBP", buyRateBps: 90800, sellRateBps: 91250 },
+    { pair: "HKDCNY", currency: "HKD", buyRateBps: 9108, sellRateBps: 9142 },
+    { pair: "JPYCNY", currency: "JPY", buyRateBps: 468, sellRateBps: 472 },
+  ]);
+
+  // ============ 外汇衍生品合约 ============
+  await db.insert(fxContracts).values([
     {
-      name: "李娜",
-      phone: "13800138000",
-      bankName: "招商银行",
-      cardTail: "6688",
-      relation: "爱人",
-      birthday: "11-18",
-      note: "老婆",
+      type: "forward",
+      currency: "USD",
+      foreignAmountCents: 5000000, // $50,000
+      lockedRateBps: 70850,
+      direction: "sell_foreign",
+      marginCents: 1771250, // 50000 × 7.0850 × 5%
+      expiresAt: day(30),
+      status: "active",
+      createdAt: day(-12),
     },
     {
-      name: "王强",
-      phone: "13912345678",
-      bankName: "工商银行",
-      cardTail: "2210",
-      relation: "同事",
-      birthday: null,
-      note: "工位旁边",
-    },
-    {
-      name: "陈晨",
-      phone: "13798765432",
-      bankName: "建设银行",
-      cardTail: "8899",
-      relation: "朋友",
-      birthday: "03-22",
-      note: "大学室友",
-    },
-    {
-      name: "周敏",
-      phone: "13655556666",
-      bankName: "建设银行",
-      cardTail: "3301",
-      relation: "房东",
-      birthday: null,
-      note: "每月5号交房租",
-    },
-    {
-      name: "张秀兰",
-      phone: "13900001111",
-      bankName: "农业银行",
-      cardTail: "1122",
-      relation: "家人",
-      birthday: "07-09",
-      note: "妈妈",
+      type: "forward",
+      currency: "USD",
+      foreignAmountCents: 3000000,
+      lockedRateBps: 70960,
+      direction: "sell_foreign",
+      marginCents: 0,
+      expiresAt: day(-40),
+      status: "settled",
+      createdAt: day(-70),
     },
   ]);
-  const allContacts = await db.query.contacts.findMany();
-  const byName = Object.fromEntries(allContacts.map((c) => [c.name, c]));
 
-  // ---------- 交易流水（近 3 个月） ----------
-  type Tx = typeof transactions.$inferInsert;
-  const txs: Tx[] = [];
-  const add = (t: Tx) => txs.push(t);
-
-  // 每月固定收入
-  for (const m of [8, 9, 10]) {
-    add({
-      direction: "in",
-      amountCents: 2850000,
-      category: "工资",
-      counterparty: "云启科技有限公司",
-      memo: `${m}月工资`,
-      channel: "代发",
-      occurredAt: new Date(`2026-${String(m).padStart(2, "0")}-10T10:05:00+08:00`),
-    });
-    add({
-      direction: "out",
-      amountCents: 450000,
-      category: "住房",
-      counterparty: "周敏",
-      memo: "房租",
-      channel: "手机银行",
-      occurredAt: new Date(`2026-${String(m).padStart(2, "0")}-05T09:12:00+08:00`),
-    });
-  }
-
-  const spend: Array<[number, number, string, string, string, string?, number?, number?]> = [
-    // [dayOffset, amountCents, category, counterparty, memo, channel, hour, minute]
-    [-88, 8600, "餐饮", "海底捞火锅(大悦城店)", "部门聚餐", "支付宝", 19, 42],
-    [-85, 15200, "购物", "京东", "空气炸锅", "微信", 21, 3],
-    [-82, 4600, "交通", "滴滴出行", "加班打车", "微信", 22, 48],
-    [-80, 12900, "餐饮", "星巴克(国贸店)", "咖啡豆+早餐", "支付宝", 8, 35],
-    [-78, 38000, "购物", "Apple Store官方旗舰店", "AirPods Pro", "支付宝", 15, 20],
-    [-75, 21000, "娱乐", "万达影城", "电影票x3", "微信", 19, 10],
-    [-73, 9800, "医疗", "同仁堂药店", "感冒药", "微信", 11, 26],
-    [-70, 66000, "教育", "得到App", "年度会员", "支付宝", 9, 5],
-    [-68, 5200, "餐饮", "盒马鲜生", "周末采购", "支付宝", 18, 55],
-    [-66, 120000, "转账", "张秀兰", "生活费", "手机银行", 10, 30],
-    [-63, 19900, "购物", "优衣库旗舰店", "秋冬外套", "支付宝", 14, 8],
-    [-60, 8800, "交通", "中国石化", "加油", "微信", 7, 50],
-    [-57, 15600, "餐饮", "西贝莜面村", "家庭聚餐", "微信", 12, 40],
-    [-54, 320000, "购物", "苏宁易购", "戴森吸尘器", "刷卡", 16, 22],
-    [-51, 7400, "餐饮", "美团外卖", "外卖", "美团", 19, 33],
-    [-48, 26000, "娱乐", "Steam", "游戏", "微信", 21, 15],
-    [-45, 45000, "医疗", "协和医院", "体检", "微信", 8, 20],
-    [-42, 13200, "购物", "天猫超市", "日用品", "支付宝", 20, 44],
-    [-39, 9100, "餐饮", "海底捞火锅(望京店)", "朋友聚餐AA", "微信", 19, 5],
-    [-36, 18800, "交通", "12306", "高铁票 北京-上海", "12306", 9, 41],
-    [-33, 26600, "购物", "小米有品", "智能音箱", "微信", 13, 18],
-    [-30, 5200, "餐饮", "瑞幸咖啡", "咖啡", "微信", 9, 12],
-    [-27, 210000, "教育", "VIPKID", "孩子英语课", "支付宝", 20, 30],
-    [-24, 11600, "餐饮", "麦当劳", "午餐", "支付宝", 12, 25],
-    [-21, 39800, "娱乐", "大麦网", "演唱会门票", "支付宝", 15, 55],
-    [-18, 8600, "餐饮", "盒马鲜生", "生鲜", "支付宝", 18, 20],
-    [-15, 52000, "转账", "李娜", "家用", "手机银行", 10, 0],
-    [-12, 14400, "购物", "拼多多", "纸巾洗衣液", "微信", 16, 38],
-    [-9, 22600, "餐饮", "四季民福烤鸭店", "客户宴请", "刷卡", 19, 48],
-    [-7, 5800, "交通", "北京地铁", "交通卡充值", "支付宝", 8, 15],
-    [-5, 11200, "餐饮", "星巴克(金融街店)", "早餐", "微信", 8, 40],
-    [-3, 29900, "购物", "京东", "机械键盘", "微信", 22, 10],
-    [-1, 6400, "餐饮", "肯德基", "晚餐", "支付宝", 18, 55],
-  ];
-  for (const [off, amt, cat, cp, memo, ch, h, m] of spend) {
-    add({ direction: "out", amountCents: amt, category: cat, counterparty: cp, memo, channel: ch ?? "支付宝", occurredAt: day(off, h ?? 12, m ?? 0) });
-  }
-
-  // 理财申赎流水
-  add({ direction: "out", amountCents: 2000000, category: "理财", counterparty: "招银理财", memo: "申购 日日盈", channel: "手机银行", occurredAt: day(-70, 10, 15) });
-  add({ direction: "in", amountCents: 500000, category: "理财", counterparty: "招银理财", memo: "赎回 日日盈", channel: "手机银行", occurredAt: day(-20, 14, 30) });
-
-  // ---------- 异常交易 ----------
-  add({
-    direction: "out",
-    amountCents: 380000,
-    category: "购物",
-    counterparty: "AMAZON UK * MARKETPLACE",
-    memo: "境外线上消费",
-    channel: "刷卡",
-    isAnomaly: true,
-    anomalyReason: "凌晨 2:37 境外大额消费，与常用时段、常用地区不符",
-    occurredAt: day(-16, 2, 37),
-  });
-  add({
-    direction: "out",
-    amountCents: 64800,
-    category: "娱乐",
-    counterparty: "某网络游戏平台",
-    memo: "游戏充值",
-    channel: "微信",
-    isAnomaly: true,
-    anomalyReason: "单日游戏充值多笔、累计 ¥906，频次与金额远超历史均值",
-    occurredAt: day(-11, 23, 58),
-  });
-  add({
-    direction: "out",
-    amountCents: 1200000,
-    category: "转账",
-    counterparty: "*德柱(尾号 9921)",
-    memo: "转账",
-    channel: "手机银行",
-    isAnomaly: true,
-    anomalyReason: "向无历史往来账户转账 ¥12,000，金额超过日常转账 90 分位",
-    occurredAt: day(-28, 21, 14),
-  });
-  add({
-    direction: "out",
-    amountCents: 25800,
-    category: "娱乐",
-    counterparty: "某网络游戏平台",
-    memo: "游戏充值",
-    channel: "微信",
-    isAnomaly: true,
-    anomalyReason: "单日游戏充值多笔、累计 ¥906，频次与金额远超历史均值",
-    occurredAt: day(-11, 22, 41),
-  });
-
-  await db.insert(transactions).values(txs);
-
-  // ---------- 银行卡 ----------
-  await db.insert(cards).values([
+  // ============ 供应链金融产品 ============
+  await db.insert(scfProducts).values([
     {
-      cardType: "debit",
-      bankName: "灵犀银行",
-      last4: "8886",
-      creditLimitCents: null,
-      usedCents: 0,
-      dailyLimitCents: 5000000,
-      status: "normal",
-      onlinePayEnabled: true,
+      code: "ORDER_LOAN",
+      name: "跨境订单贷",
+      rateBps: 680,
+      maxAmountCents: 50000000, // ¥500,000
+      termDays: 90,
+      tags: "凭平台订单,随借随还,线上秒批",
+      description: "凭亚马逊/速卖通已发货未回款订单融资，按订单金额 80% 授信，回款自动归还。",
     },
+    {
+      code: "WAREHOUSE",
+      name: "海外仓仓单质押贷",
+      rateBps: 750,
+      maxAmountCents: 100000000, // ¥1,000,000
+      termDays: 180,
+      tags: "库存质押,海外仓,大额",
+      description: "以海外仓在库货物仓单质押，按货值 60% 放款，适合备货旺季资金周转。",
+    },
+    {
+      code: "TAX_REBATE",
+      name: "出口退税贷",
+      rateBps: 560,
+      maxAmountCents: 30000000, // ¥300,000
+      termDays: 60,
+      tags: "退税过桥,低息,快到账",
+      description: "以已申报未到账的出口退税款为质押，提前拿到退税资金，年化利率更低。",
+    },
+    {
+      code: "CREDIT_INS",
+      name: "出口信保融资",
+      rateBps: 620,
+      maxAmountCents: 80000000, // ¥800,000
+      termDays: 120,
+      tags: "中信保保单,赊销订单",
+      description: "凭中信保短期出口信用保险保单，为赊销（OA）订单提供应收账款融资。",
+    },
+  ]);
+
+  // ============ 在途/已还融资 ============
+  const products = await db.query.scfProducts.findMany();
+  const orderLoanId = products.find((p) => p.code === "ORDER_LOAN")!.id;
+  const rebateLoanId = products.find((p) => p.code === "TAX_REBATE")!.id;
+  await db.insert(scfLoans).values([
+    {
+      productId: orderLoanId,
+      amountCents: 12000000, // ¥120,000
+      rateBps: 680,
+      purpose: "黑五备货采购",
+      relatedRef: "AMZ-ORDER-88213",
+      status: "disbursed",
+      appliedAt: day(-25),
+      dueAt: day(65),
+    },
+    {
+      productId: rebateLoanId,
+      amountCents: 8000000,
+      rateBps: 560,
+      purpose: "8 月退税过桥",
+      relatedRef: "2025-08",
+      status: "repaid",
+      appliedAt: day(-95),
+      dueAt: day(-35),
+      repaidAt: day(-38),
+    },
+  ]);
+
+  // ============ 物流运单 ============
+  await db.insert(shipments).values([
+    {
+      trackingNo: "YT88362012",
+      carrier: "云途物流",
+      platform: "Amazon 北美站",
+      destination: "美国·洛杉矶 ONT8 仓",
+      goodsDesc: "蓝牙耳机 × 1,200 件",
+      weightKg: "486kg",
+      freightCents: 2136000,
+      status: "in_transit",
+      milestones: JSON.stringify([
+        { time: "10-24 14:20", text: "深圳揽收，货物已入云途仓", location: "深圳" },
+        { time: "10-26 09:05", text: "出口报关放行（蛇口港）", location: "深圳蛇口" },
+        { time: "10-28 22:40", text: "装船离港，船名 COSCO SHIPPING UNIVERSE", location: "太平洋航线" },
+        { time: "11-01 06:12", text: "抵达洛杉矶港，等待卸船", location: "洛杉矶" },
+      ]),
+      etaAt: day(9),
+      createdAt: day(-9),
+    },
+    {
+      trackingNo: "4PX77120908",
+      carrier: "递四方",
+      platform: "速卖通",
+      destination: "德国·法兰克福",
+      goodsDesc: "手机壳套装 × 860 件",
+      weightKg: "152kg",
+      freightCents: 684000,
+      status: "customs_clearance",
+      milestones: JSON.stringify([
+        { time: "10-27 11:30", text: "东莞仓揽收", location: "东莞" },
+        { time: "10-29 16:45", text: "香港机场起飞，航班 CX880", location: "香港" },
+        { time: "10-31 08:20", text: "抵达法兰克福，转海关查验", location: "法兰克福" },
+        { time: "11-02 07:55", text: "海关查验中（抽中人工查验）", location: "法兰克福海关" },
+      ]),
+      etaAt: day(6),
+      createdAt: day(-6),
+    },
+    {
+      trackingNo: "SFIN33012871",
+      carrier: "顺丰国际",
+      platform: "Temu",
+      destination: "日本·东京",
+      goodsDesc: "智能手环 × 300 件",
+      weightKg: "45kg",
+      freightCents: 189000,
+      status: "delivered",
+      milestones: JSON.stringify([
+        { time: "10-25 10:10", text: "深圳揽收", location: "深圳" },
+        { time: "10-26 19:30", text: "宝安机场起飞", location: "深圳" },
+        { time: "10-27 08:40", text: "东京羽田清关放行", location: "东京" },
+        { time: "10-28 15:22", text: "签收完成（Temu 集货仓）", location: "东京" },
+      ]),
+      etaAt: day(-4),
+      createdAt: day(-8),
+    },
+    {
+      trackingNo: "YW55690234",
+      carrier: "燕文物流",
+      platform: "独立站",
+      destination: "英国·伦敦",
+      goodsDesc: "宠物用品 × 540 件",
+      weightKg: "310kg",
+      freightCents: 1176000,
+      status: "label_created",
+      milestones: JSON.stringify([{ time: "11-02 09:00", text: "运单已创建，等待揽收", location: "深圳" }]),
+      etaAt: day(14),
+      createdAt: day(0),
+    },
+  ]);
+
+  // ============ 海关报关单 ============
+  await db.insert(customsDeclarations).values([
+    {
+      declNo: "5304202611882033",
+      port: "深圳蛇口海关",
+      goodsDesc: "蓝牙耳机（出口退税 13%）",
+      valueUsdCents: 8640000, // $86,400
+      status: "released",
+      declaredAt: day(-8),
+      releasedAt: day(-7),
+    },
+    {
+      declNo: "5304202611885617",
+      port: "宁波舟山港海关",
+      goodsDesc: "手机壳套装",
+      valueUsdCents: 2380000,
+      status: "inspecting",
+      declaredAt: day(-2),
+    },
+    {
+      declNo: "5304202611889901",
+      port: "深圳前海海关",
+      goodsDesc: "宠物用品",
+      valueUsdCents: 4120000,
+      status: "declared",
+      declaredAt: day(0),
+    },
+  ]);
+
+  // ============ 出口退税 ============
+  await db.insert(taxRefunds).values([
+    { period: "2025-08", amountCents: 4238000, status: "paid", progress: 100, declNo: "5304202611774521", updatedAt: day(-38) },
+    { period: "2025-09", amountCents: 3815000, status: "approved", progress: 85, declNo: "5304202611778903", updatedAt: day(-6) },
+    { period: "2025-10", amountCents: 4572000, status: "reviewing", progress: 55, declNo: "5304202611882033", updatedAt: day(-3) },
+  ]);
+
+  // ============ 联系人 ============
+  const insertedContacts = await db
+    .insert(contacts)
+    .values([
+      { name: "林悦", phone: "138****6621", bankName: "招商银行", cardTail: "8842", relation: "爱人", birthday: "11-18", note: "喜欢向日葵和草莓蛋糕" },
+      { name: "王强", phone: "137****3309", bankName: "灵犀银行", cardTail: "2201", relation: "合伙人", birthday: "03-24" },
+      { name: "李厂长", phone: "136****8874", bankName: "中国银行", cardTail: "5566", relation: "供应商", note: "深圳华强北电子厂" },
+      { name: "张经理", phone: "135****2210", bankName: "建设银行", cardTail: "9012", relation: "物流商", note: "云途物流客户经理" },
+      { name: "James Miller", phone: "+1 310****882", bankName: "Bank of America", cardTail: "4408", relation: "海外仓", note: "洛杉矶 ONT8 仓运营" },
+    ])
+    .$returningId();
+  const cid = Object.fromEntries(
+    ["林悦", "王强", "李厂长", "张经理", "James Miller"].map((n, i) => [n, insertedContacts[i].id]),
+  );
+
+  // ============ 交易流水（近 3 个月，跨境电商经营 + 日常） ============
+  type Tx = {
+    direction: "in" | "out";
+    amountCents: number;
+    category: string;
+    counterparty: string;
+    memo?: string;
+    channel?: string;
+    at: Date;
+    anomaly?: string;
+  };
+  const txs: Tx[] = [
+    // —— 电商回款（半月一次） ——
+    { direction: "in", amountCents: 12866000, category: "电商回款", counterparty: "Amazon.com Services", memo: "北美站 10 月下半月回款", channel: "跨境收款", at: day(-13, 10) },
+    { direction: "in", amountCents: 9642000, category: "电商回款", counterparty: "Amazon.com Services", memo: "北美站 10 月上半月回款", channel: "跨境收款", at: day(-28, 10) },
+    { direction: "in", amountCents: 11328000, category: "电商回款", counterparty: "Amazon.com Services", memo: "北美站 9 月下半月回款", channel: "跨境收款", at: day(-43, 10) },
+    { direction: "in", amountCents: 8895000, category: "电商回款", counterparty: "Amazon.com Services", memo: "北美站 9 月上半月回款", channel: "跨境收款", at: day(-58, 10) },
+    { direction: "in", amountCents: 2310000, category: "电商回款", counterparty: "速卖通 AliExpress", memo: "欧洲站回款", channel: "跨境收款", at: day(-17, 11) },
+    { direction: "in", amountCents: 1874000, category: "电商回款", counterparty: "Payoneer 派安盈", memo: "美元余额提现结汇", channel: "跨境收款", at: day(-6, 14) },
+    { direction: "in", amountCents: 4238000, category: "退税", counterparty: "国家税务总局深圳市税务局", memo: "2025-08 出口退税到账", channel: "国库", at: day(-38, 9) },
+    // —— 经营支出 ——
+    { direction: "out", amountCents: 2136000, category: "物流", counterparty: "云途物流", memo: "YT88362012 运费", at: day(-9, 15) },
+    { direction: "out", amountCents: 684000, category: "物流", counterparty: "递四方速递", memo: "4PX77120908 运费", at: day(-6, 16) },
+    { direction: "out", amountCents: 189000, category: "物流", counterparty: "顺丰国际", memo: "SFIN33012871 运费", at: day(-8, 11) },
+    { direction: "out", amountCents: 960000, category: "物流", counterparty: "云途物流", memo: "10 月上旬批次运费", at: day(-24, 15) },
+    { direction: "out", amountCents: 35600000, category: "采购", counterparty: "深圳华强北电子厂（李厂长）", memo: "蓝牙耳机黑五备货", at: day(-26, 14) },
+    { direction: "out", amountCents: 18200000, category: "采购", counterparty: "深圳华强北电子厂（李厂长）", memo: "手机壳原料款", at: day(-52, 14) },
+    { direction: "out", amountCents: 9800000, category: "采购", counterparty: "东莞宠物用品厂", memo: "宠物用品 540 件", at: day(-3, 10) },
+    { direction: "out", amountCents: 4260000, category: "推广", counterparty: "Amazon Advertising", memo: "10 月 PPC 广告费", at: day(-12, 9) },
+    { direction: "out", amountCents: 3150000, category: "推广", counterparty: "Amazon Advertising", memo: "9 月 PPC 广告费", at: day(-42, 9) },
+    { direction: "out", amountCents: 1880000, category: "关税", counterparty: "洛杉矶海关（代缴）", memo: "蓝牙耳机关税", at: day(-1, 8) },
+    { direction: "out", amountCents: 2400000, category: "仓储", counterparty: "James Miller（ONT8 海外仓）", memo: "10 月仓租+操作费", at: day(-10, 13) },
+    { direction: "out", amountCents: 2400000, category: "仓储", counterparty: "James Miller（ONT8 海外仓）", memo: "9 月仓租+操作费", at: day(-40, 13) },
+    // —— 定时/固定 ——
+    { direction: "out", amountCents: 1200000, category: "转账", counterparty: "王强", memo: "10 月工资", at: day(-17, 10) },
+    { direction: "out", amountCents: 1200000, category: "转账", counterparty: "王强", memo: "9 月工资", at: day(-48, 10) },
+    { direction: "out", amountCents: 1200000, category: "转账", counterparty: "王强", memo: "8 月工资", at: day(-79, 10) },
+    // —— 日常消费 ——
+    { direction: "out", amountCents: 26800, category: "餐饮", counterparty: "海底捞（海上世界店）", memo: "团队聚餐", at: day(-5, 19) },
+    { direction: "out", amountCents: 8900, category: "餐饮", counterparty: "星巴克（科技园店）", at: day(-2, 9) },
+    { direction: "out", amountCents: 15600, category: "餐饮", counterparty: "八合里牛肉火锅", at: day(-20, 19) },
+    { direction: "out", amountCents: 129900, category: "购物", counterparty: "京东", memo: "iPhone 配件", at: day(-7, 21) },
+    { direction: "out", amountCents: 34900, category: "购物", counterparty: "山姆会员店", at: day(-15, 16) },
+    { direction: "out", amountCents: 4500, category: "交通", counterparty: "滴滴出行", at: day(-4, 8) },
+    { direction: "out", amountCents: 18600, category: "交通", counterparty: "中石化加油站", at: day(-18, 18) },
+    { direction: "out", amountCents: 56000, category: "住房", counterparty: "自如公寓", memo: "11 月房租", at: day(-1, 10) },
+    { direction: "in", amountCents: 520000, category: "转账", counterparty: "林悦", memo: "家用补贴", at: day(-9, 20) },
+    // —— 异常交易（4 笔） ——
+    { direction: "out", amountCents: 520000, category: "其他", counterparty: "深夜便利店扫码", memo: "凌晨大额支出", channel: "扫码支付", at: day(-3, 3, 42), anomaly: "凌晨 0-5 点大额交易" },
+    { direction: "out", amountCents: 2800000, category: "转账", counterparty: "某某商贸有限公司", memo: "货款？", at: day(-2, 22), anomaly: "陌生对手方大额转账" },
+    { direction: "out", amountCents: 128000, category: "娱乐", counterparty: "星光 KTV", at: day(-4, 21), anomaly: "当日娱乐类高频大额累计" },
+    { direction: "out", amountCents: 89900, category: "娱乐", counterparty: "环球影城旗舰店", at: day(-4, 22), anomaly: "当日娱乐类高频大额累计" },
+    { direction: "out", amountCents: 128600, category: "娱乐", counterparty: "夜宴酒吧", at: day(-4, 23), anomaly: "当日娱乐类高频大额累计" },
+  ];
+  await db.insert(transactions).values(
+    txs.map((t) => ({
+      direction: t.direction,
+      amountCents: t.amountCents,
+      category: t.category,
+      counterparty: t.counterparty,
+      memo: t.memo,
+      channel: t.channel ?? "手机银行",
+      occurredAt: t.at,
+      isAnomaly: !!t.anomaly,
+      anomalyReason: t.anomaly,
+    })),
+  );
+
+  // ============ 定时转账 ============
+  await db.insert(scheduledTransfers).values([
+    { contactId: cid["王强"], amountCents: 1200000, memo: "11 月工资", executeAt: day(13, 10), status: "pending" },
+  ]);
+
+  // ============ AA 收款 ============
+  await db.insert(aaSplits).values([
+    {
+      title: "部门聚餐 · 海底捞",
+      totalCents: 26800,
+      participants: JSON.stringify([
+        { name: "王强", amountCents: 6700, paid: true },
+        { name: "陈晨", amountCents: 6700, paid: true },
+        { name: "刘洋", amountCents: 6700, paid: false },
+        { name: "赵敏", amountCents: 6700, paid: false },
+      ]),
+      status: "collecting",
+      createdAt: day(-5, 21),
+    },
+  ]);
+
+  // ============ 银行卡 ============
+  await db.insert(cards).values([
+    { cardType: "debit", bankName: "灵犀银行", last4: "6688", dailyLimitCents: 5000000, status: "normal", onlinePayEnabled: true },
     {
       cardType: "credit",
       bankName: "灵犀银行",
-      last4: "5210",
-      creditLimitCents: 5000000, // 5万额度
-      usedCents: 1365000,
-      dailyLimitCents: 2000000,
+      last4: "8899",
+      creditLimitCents: 10000000,
+      usedCents: 1258000,
+      dailyLimitCents: 3000000,
       status: "normal",
       onlinePayEnabled: true,
     },
   ]);
 
-  // ---------- 理财产品 ----------
-  await db.insert(wealthProducts).values([
-    {
-      name: "灵每日日盈",
-      type: "cash",
-      riskLevel: "R1",
-      annualRateBps: 168,
-      minAmountCents: 100,
-      termDays: 0,
-      tags: "灵活申赎,货基增强",
-      description: "现金管理类，T+0 快速赎回，适合放零钱。",
-    },
-    {
-      name: "灵每安稳 90 天",
-      type: "bond",
-      riskLevel: "R2",
-      annualRateBps: 245,
-      minAmountCents: 100000,
-      termDays: 90,
-      tags: "纯债,封闭90天",
-      description: "中短债策略，波动小，持有 90 天到期可续。",
-    },
-    {
-      name: "灵每丰利一年定开",
-      type: "bond",
-      riskLevel: "R2",
-      annualRateBps: 298,
-      minAmountCents: 100000,
-      termDays: 365,
-      tags: "固收+,定开",
-      description: "固收打底 + 少量权益增强，一年定开。",
-    },
-    {
-      name: "灵犀平衡混合 A",
-      type: "mixed",
-      riskLevel: "R3",
-      annualRateBps: 412,
-      minAmountCents: 10000,
-      termDays: 0,
-      tags: "股债平衡,灵活申赎",
-      description: "股债 5:5 动态平衡，追求中长期稳健增值。",
-    },
-    {
-      name: "中证 500 指数增强",
-      type: "index",
-      riskLevel: "R4",
-      annualRateBps: 856,
-      minAmountCents: 10000,
-      termDays: 0,
-      tags: "指数增强,高波动",
-      description: "跟踪中证 500 并力争超额，波动较大。",
-    },
-    {
-      name: "积存金（黄金）",
-      type: "gold",
-      riskLevel: "R3",
-      annualRateBps: 0,
-      minAmountCents: 10000,
-      termDays: 0,
-      tags: "黄金,抗通胀",
-      description: "按克积存实物黄金，价格随金价浮动。",
-    },
-  ]);
+  // ============ 理财产品 ============
+  const wp = await db
+    .insert(wealthProducts)
+    .values([
+      { name: "灵犀日日盈", type: "cash", riskLevel: "R1", annualRateBps: 185, minAmountCents: 100, termDays: 0, tags: "灵活申赎,货基增强", description: "跨境收款闲置资金好去处，T+0 赎回实时到账。" },
+      { name: "稳利 180 天固收", type: "bond", riskLevel: "R2", annualRateBps: 268, minAmountCents: 100000, termDays: 180, tags: "纯债,持有到期", description: "主投利率债与高等级信用债，适合账期闲置资金。" },
+      { name: "汇金双债增强", type: "bond", riskLevel: "R2", annualRateBps: 295, minAmountCents: 100000, termDays: 365, tags: "固收+,转债增强", description: "纯债打底 + 可转债增强，追求稳健超额。" },
+      { name: "均衡配置混合 A", type: "mixed", riskLevel: "R3", annualRateBps: 420, minAmountCents: 100000, termDays: 0, tags: "股债平衡", description: "股债 4:6 动态平衡，波动适中。" },
+      { name: "纳斯达克 100 指数 QDII", type: "index", riskLevel: "R4", annualRateBps: 0, minAmountCents: 10000, termDays: 0, tags: "美股,科技,美元资产", description: "跟踪纳斯达克 100，美元资产天然对冲汇率敞口。" },
+      { name: "积存金", type: "gold", riskLevel: "R3", annualRateBps: 0, minAmountCents: 100, termDays: 0, tags: "黄金,抗通胀", description: "1 元起投实物黄金积存，可提金可赎回。" },
+    ])
+    .$returningId();
 
-  // ---------- 持仓 ----------
-  const products = await db.query.wealthProducts.findMany();
-  const prod = (n: string) => products.find((p) => p.name === n)!;
+  // ============ 理财持仓 ============
   await db.insert(holdings).values([
+    { productId: wp[0].id, amountCents: 20000000, profitCents: 182300, purchasedAt: day(-60) },
+    { productId: wp[1].id, amountCents: 30000000, profitCents: 402500, purchasedAt: day(-80) },
+  ]);
+
+  // ============ 风险测评 ============
+  await db.insert(riskProfiles).values([
     {
-      productId: prod("灵每日日盈").id,
-      amountCents: 1500000,
-      profitCents: 18540,
-      purchasedAt: day(-70, 10, 15),
-    },
-    {
-      productId: prod("灵每安稳 90 天").id,
-      amountCents: 5000000,
-      profitCents: 61230,
-      purchasedAt: day(-55, 15, 0),
+      score: 46,
+      level: "稳健型",
+      answers: JSON.stringify({
+        "您的计划投资期限是？": "1-3 年",
+        "您能接受的最大本金回撤是？": "5% 以内",
+        "您的收入稳定性如何？": "基本稳定",
+        "您的投资经验？": "买过债基/理财",
+      }),
+      createdAt: day(-70),
     },
   ]);
 
-  // ---------- 风险测评（已做过一次：稳健型） ----------
-  await db.insert(riskProfiles).values({
-    score: 46,
-    level: "稳健型",
-    answers: JSON.stringify({ horizon: "1-3年", loss: "可接受5%以内回撤", income: "稳定" }),
-    createdAt: day(-100, 11, 0),
-  });
+  // ============ 生日守护（armed，生日月 11 月将自动锁款） ============
+  await db.insert(scenarios).values([
+    {
+      type: "birthday_guard",
+      title: "林悦生日守护",
+      contactId: cid["林悦"],
+      payload: JSON.stringify({
+        birthday: "11-18",
+        lockCents: 100000,
+        orderLeadDays: 2,
+        gifts: [
+          { kind: "flower", budgetCents: 26800, merchant: "花加", itemName: "向日葵花束" },
+          { kind: "cake", budgetCents: 19800, merchant: "诺心", itemName: "6 寸草莓蛋糕" },
+        ],
+      }),
+      status: "armed",
+      log: JSON.stringify([{ at: day(-2, 20).toISOString(), text: "守护任务已创建，进入生日当月将自动锁定 ¥1,000 专款" }]),
+      createdAt: day(-2, 20),
+    },
+  ]);
 
-  // ---------- AA 收款示例 ----------
-  await db.insert(aaSplits).values({
-    title: "部门聚餐 · 海底捞",
-    totalCents: 103200,
-    participants: JSON.stringify([
-      { name: "王强", phone: "13912345678", amountCents: 25800, paid: true },
-      { name: "陈晨", phone: "13798765432", amountCents: 25800, paid: false },
-      { name: "刘洋", phone: "13511112222", amountCents: 25800, paid: true },
-      { name: "赵倩", phone: "13633334444", amountCents: 25800, paid: false },
-    ]),
-    status: "collecting",
-    createdAt: day(-2, 20, 30),
-  });
-
-  // ---------- 定时转账示例 ----------
-  await db.insert(scheduledTransfers).values({
-    contactId: byName["周敏"].id,
-    amountCents: 450000,
-    memo: "11月房租",
-    executeAt: day(4, 9, 0),
-    status: "pending",
-    createdAt: day(-1, 21, 0),
-  });
-
-  console.log("✅ Seed 完成");
+  console.log("✅ Seed 完成：跨境电商主体（陈航 · 跨洋科技）+ 多币种 + 供应链金融 + 外汇衍生品 + 外贸一体化数据已就绪");
   process.exit(0);
 }
 
