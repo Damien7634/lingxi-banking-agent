@@ -1,11 +1,12 @@
 import { z } from "zod";
 import { tool } from "ai";
 import { getDb } from "../queries/connection";
-import { cards, contacts, holdings, wealthProducts, scenarios, transactions } from "@db/schema";
+import { cards, contacts, holdings, wealthProducts, scenarios, transactions, fxWallets, fxRates, fxContracts, scfProducts, scfLoans, shipments, customsDeclarations, taxRefunds } from "@db/schema";
 import { and, desc, eq, gte } from "drizzle-orm";
-import { getMainAccount, availableCents, spend, receive, fenToYuan } from "../lib/bank";
+import { getMainAccount, availableCents, spend, receive, fenToYuan, lockCents, unlockCents } from "../lib/bank";
 import { matchContacts } from "../routers/account";
 import { recommendProducts } from "../routers/wealth";
+import { toCnyCents, CURRENCY_META } from "../routers/fx";
 import { detectAnomalies, CATEGORIES } from "../routers/bill";
 import { tickBirthdayGuard, DEFAULT_GIFTS, parsePayload } from "../lib/scenarioEngine";
 import { scheduledTransfers, aaSplits, riskProfiles, giftOrders } from "@db/schema";
@@ -443,6 +444,312 @@ export function buildAgentTools() {
             订单: orders.map((o) => `${o.merchant}「${o.itemName}」${yuan(o.amountCents / 100)}（${o.status}）`),
             日志: (JSON.parse(r.log) as Array<{ text: string }>).map((l) => l.text),
           };
+        }));
+      },
+    }),
+
+    // ================= 跨境电商：外汇与避险 =================
+    getFxRates: tool({
+      description: "查询实时外汇牌价（美元/欧元/英镑/港币/日元兑人民币的结汇价与购汇价）",
+      inputSchema: z.object({}),
+      execute: async () => {
+        const rows = await getDb().query.fxRates.findMany();
+        return rows.map((r) => ({
+          币种: `${CURRENCY_META[r.currency]?.name ?? r.currency} ${r.currency}`,
+          结汇价: (r.buyRateBps / 10000).toFixed(4),
+          购汇价: (r.sellRateBps / 10000).toFixed(4),
+        }));
+      },
+    }),
+
+    getFxWallets: tool({
+      description: "查询多币种钱包余额及折合人民币",
+      inputSchema: z.object({}),
+      execute: async () => {
+        const db = getDb();
+        const [wallets, rates] = await Promise.all([db.query.fxWallets.findMany(), db.query.fxRates.findMany()]);
+        const rateMap = Object.fromEntries(rates.map((r) => [r.currency, r.buyRateBps]));
+        return wallets.map((w) => ({
+          币种: `${CURRENCY_META[w.currency]?.name ?? w.currency} ${w.currency}`,
+          外币余额: `${CURRENCY_META[w.currency]?.symbol ?? ""}${(w.balanceForeignCents / 100).toLocaleString("zh-CN", { minimumFractionDigits: 2 })}`,
+          折合人民币: yuan(toCnyCents(w.balanceForeignCents, rateMap[w.currency] ?? 0)),
+        }));
+      },
+    }),
+
+    getFxExposure: tool({
+      description: "分析汇率风险敞口：各币种资产折合人民币、已对冲比例、未对冲敞口与建议",
+      inputSchema: z.object({}),
+      execute: async () => {
+        const db = getDb();
+        const [wallets, rates, contracts] = await Promise.all([
+          db.query.fxWallets.findMany(),
+          db.query.fxRates.findMany(),
+          db.query.fxContracts.findMany({ where: eq(fxContracts.status, "active") }),
+        ]);
+        const rateMap = Object.fromEntries(rates.map((r) => [r.currency, r.buyRateBps]));
+        const items = wallets.filter((w) => w.balanceForeignCents > 0).map((w) => {
+          const cnyCents = toCnyCents(w.balanceForeignCents, rateMap[w.currency] ?? 0);
+          const hedged = contracts.filter((c) => c.currency === w.currency).reduce((s, c) => s + toCnyCents(c.foreignAmountCents, rateMap[c.currency] ?? 0), 0);
+          return {
+            币种: w.currency,
+            外币余额: (w.balanceForeignCents / 100).toLocaleString("zh-CN", { minimumFractionDigits: 2 }),
+            折合人民币: yuan(cnyCents),
+            已对冲: yuan(hedged),
+            对冲比例: `${Math.round(Math.min(1, hedged / cnyCents) * 100)}%`,
+          };
+        });
+        const total = items.reduce((s, i) => s + toCnyCents(wallets.find((w) => w.currency === i.币种)!.balanceForeignCents, rateMap[i.币种] ?? 0), 0);
+        return {
+          敞口明细: items,
+          敞口合计: yuan(total),
+          提示: "未对冲部分在人民币贬值时产生汇兑收益、升值时产生汇兑损失；建议对 1-3 个月内确定回款的敞口做远期锁汇，不确定时点部分用期权保留弹性",
+        };
+      },
+    }),
+
+    lockForwardRate: tool({
+      description: "远期锁汇（远期结售汇）：为外币资金锁定未来交割汇率，冻结 5% 人民币保证金",
+      inputSchema: z.object({
+        currency: z.enum(["USD", "EUR", "GBP", "HKD", "JPY"]).describe("外币币种"),
+        foreignAmount: z.number().positive().describe("外币金额（元，如 50000 表示 5 万美元）"),
+        tenorDays: z.number().int().min(7).max(365).describe("锁定天数，如 30"),
+      }),
+      execute: async ({ currency, foreignAmount, tenorDays }) => {
+        const db = getDb();
+        const rateRow = await db.query.fxRates.findFirst({ where: eq(fxRates.currency, currency) });
+        if (!rateRow) return { 成功: false, 原因: "暂不支持该币种" };
+        const foreignCents = toCents(foreignAmount);
+        const wallet = await db.query.fxWallets.findFirst({ where: eq(fxWallets.currency, currency) });
+        if (!wallet || wallet.balanceForeignCents < foreignCents) {
+          return { 成功: false, 原因: `${currency} 钱包余额不足（当前 ${((wallet?.balanceForeignCents ?? 0) / 100).toLocaleString()}），无法锁定该金额远期结汇` };
+        }
+        const rateBps = rateRow.buyRateBps;
+        const marginCents = Math.round(toCnyCents(foreignCents, rateBps) * 0.05);
+        const acc = await getMainAccount();
+        if (availableCents(acc) < marginCents) return { 成功: false, 原因: `活期可用余额不足支付保证金 ${yuan(marginCents)}` };
+        await lockCents(marginCents);
+        const expiresAt = new Date(Date.now() + tenorDays * 86400000);
+        const [{ id }] = await db.insert(fxContracts).values({
+          type: "forward", currency, foreignAmountCents: foreignCents, lockedRateBps: rateBps,
+          direction: "sell_foreign", marginCents, expiresAt,
+        }).$returningId();
+        return {
+          成功: true, 合约号: id, 币种: currency,
+          名义本金: `${CURRENCY_META[currency]?.symbol ?? ""}${foreignAmount.toLocaleString()}`,
+          锁定汇率: (rateBps / 10000).toFixed(4),
+          冻结保证金: yuan(marginCents),
+          到期日: expiresAt.toISOString().slice(0, 10),
+          说明: `无论届时市场汇率如何波动，到期均按 ${(rateBps / 10000).toFixed(4)} 结汇`,
+        };
+      },
+    }),
+
+    buyFxOption: tool({
+      description: "购买外汇期权：支付 1.5% 期权费，获得到期按约定汇率结汇的权利（不必须行权），适合不确定回款时点的敞口",
+      inputSchema: z.object({
+        currency: z.enum(["USD", "EUR", "GBP", "HKD", "JPY"]),
+        foreignAmount: z.number().positive().describe("名义外币本金（元）"),
+        tenorDays: z.number().int().min(7).max(365),
+      }),
+      execute: async ({ currency, foreignAmount, tenorDays }) => {
+        const db = getDb();
+        const rateRow = await db.query.fxRates.findFirst({ where: eq(fxRates.currency, currency) });
+        if (!rateRow) return { 成功: false, 原因: "暂不支持该币种" };
+        const foreignCents = toCents(foreignAmount);
+        const rateBps = rateRow.buyRateBps;
+        const premiumCents = Math.round(toCnyCents(foreignCents, rateBps) * 0.015);
+        const acc = await getMainAccount();
+        if (availableCents(acc) < premiumCents) return { 成功: false, 原因: `活期可用余额不足支付期权费 ${yuan(premiumCents)}` };
+        await spend({ amountCents: premiumCents, category: "金融衍生品", counterparty: "灵犀银行金融市场部", memo: `${currency} 外汇期权费` });
+        const expiresAt = new Date(Date.now() + tenorDays * 86400000);
+        const [{ id }] = await db.insert(fxContracts).values({
+          type: "option", currency, foreignAmountCents: foreignCents, lockedRateBps: rateBps,
+          direction: "sell_foreign", premiumCents, expiresAt,
+        }).$returningId();
+        return {
+          成功: true, 合约号: id, 类型: "外汇看跌期权（结汇保护）",
+          执行汇率: (rateBps / 10000).toFixed(4),
+          期权费: yuan(premiumCents),
+          到期日: expiresAt.toISOString().slice(0, 10),
+          说明: "若到期汇率低于执行价则行权保值，高于执行价可放弃行权按市价结汇（损失限于期权费）",
+        };
+      },
+    }),
+
+    listFxContracts: tool({
+      description: "查询我的外汇衍生品合约（远期/期权）及状态",
+      inputSchema: z.object({}),
+      execute: async () => {
+        const rows = await getDb().query.fxContracts.findMany({ orderBy: [desc(fxContracts.id)] });
+        const typeText = { forward: "远期锁汇", option: "外汇期权", swap: "外汇掉期" } as const;
+        const statusText = { active: "存续中", settled: "已交割", cancelled: "已取消" } as const;
+        return rows.map((c) => ({
+          合约号: c.id, 类型: typeText[c.type], 币种: c.currency,
+          名义本金: (c.foreignAmountCents / 100).toLocaleString(),
+          锁定汇率: (c.lockedRateBps / 10000).toFixed(4),
+          保证金: c.marginCents > 0 ? yuan(c.marginCents) : "-",
+          期权费: c.premiumCents > 0 ? yuan(c.premiumCents) : "-",
+          到期日: c.expiresAt.toISOString().slice(0, 10),
+          状态: statusText[c.status],
+        }));
+      },
+    }),
+
+    // ================= 跨境电商：供应链金融 =================
+    listScfProducts: tool({
+      description: "查询供应链金融产品（跨境订单贷/海外仓仓单质押贷/出口退税贷/出口信保融资）",
+      inputSchema: z.object({}),
+      execute: async () => {
+        const rows = await getDb().query.scfProducts.findMany();
+        return rows.map((p) => ({
+          产品: p.name, 年化利率: `${(p.rateBps / 100).toFixed(2)}%`,
+          额度上限: yuan(p.maxAmountCents), 期限: `${p.termDays} 天`,
+          特点: p.tags?.split(","), 说明: p.description,
+        }));
+      },
+    }),
+
+    applyScfLoan: tool({
+      description: "申请供应链金融融资（演示环境即时审批放款到活期）",
+      inputSchema: z.object({
+        productName: z.string().describe("产品名关键词，如「订单贷」「仓单」「退税」「信保」"),
+        amountYuan: z.number().positive().describe("申请金额（元）"),
+        purpose: z.string().optional().describe("用途，如「黑五备货」"),
+        relatedRef: z.string().optional().describe("关联订单号/报关单号/退税期"),
+      }),
+      execute: async ({ productName, amountYuan, purpose, relatedRef }) => {
+        const db = getDb();
+        const all = await db.query.scfProducts.findMany();
+        const p = all.find((x) => x.name.includes(productName)) ?? all.find((x) => x.code.includes(productName.toUpperCase()));
+        if (!p) return { 成功: false, 原因: `未找到匹配「${productName}」的产品，可选：${all.map((x) => x.name).join("、")}` };
+        const amountCents = toCents(amountYuan);
+        if (amountCents > p.maxAmountCents) return { 成功: false, 原因: `超出额度上限 ${yuan(p.maxAmountCents)}` };
+        const existing = (await db.query.scfLoans.findMany({ where: eq(scfLoans.productId, p.id) })).find((l) => l.status === "disbursed");
+        if (existing) return { 成功: false, 原因: `「${p.name}」有在途融资 ${yuan(existing.amountCents)}，需先归还` };
+        const dueAt = new Date(Date.now() + p.termDays * 86400000);
+        const [{ id }] = await db.insert(scfLoans).values({
+          productId: p.id, amountCents, rateBps: p.rateBps, purpose, relatedRef, status: "disbursed", dueAt,
+        }).$returningId();
+        await receive({ amountCents, category: "融资放款", counterparty: "灵犀银行供应链金融", memo: `${p.name} 放款` });
+        return {
+          成功: true, 融资号: id, 产品: p.name,
+          放款金额: yuan(amountCents), 年化利率: `${(p.rateBps / 100).toFixed(2)}%`,
+          到期日: dueAt.toISOString().slice(0, 10),
+          说明: "资金已实时到账活期账户，可在首页余额中查看",
+        };
+      },
+    }),
+
+    repayScfLoan: tool({
+      description: "归还供应链融资（本金+按天计息，从活期扣）",
+      inputSchema: z.object({ productName: z.string().optional().describe("产品名关键词；不填则还最早一笔在途融资") }),
+      execute: async ({ productName }) => {
+        const db = getDb();
+        const loans = await db.query.scfLoans.findMany({ where: eq(scfLoans.status, "disbursed"), orderBy: [desc(scfLoans.id)] });
+        if (loans.length === 0) return { 成功: false, 原因: "当前没有在途融资" };
+        let loan = loans[0]!;
+        if (productName) {
+          const products = await db.query.scfProducts.findMany();
+          const p = products.find((x) => x.name.includes(productName));
+          const hit = loans.find((l) => l.productId === p?.id);
+          if (!hit) return { 成功: false, 原因: `没有匹配「${productName}」的在途融资` };
+          loan = hit;
+        }
+        const p = await db.query.scfProducts.findFirst({ where: eq(scfProducts.id, loan.productId) });
+        const days = Math.max(1, Math.ceil((Date.now() - loan.appliedAt.getTime()) / 86400000));
+        const interestCents = Math.round((loan.amountCents * loan.rateBps * days) / 10000 / 365);
+        const totalCents = loan.amountCents + interestCents;
+        const acc = await getMainAccount();
+        if (availableCents(acc) < totalCents) return { 成功: false, 原因: `可用余额不足：需 ${yuan(totalCents)}（本金 ${yuan(loan.amountCents)} + 利息 ${yuan(interestCents)}），当前可用 ${yuan(availableCents(acc))}` };
+        await spend({ amountCents: totalCents, category: "融资还款", counterparty: "灵犀银行供应链金融", memo: `归还「${p?.name}」本金+利息` });
+        await db.update(scfLoans).set({ status: "repaid", repaidAt: new Date() }).where(eq(scfLoans.id, loan.id));
+        return { 成功: true, 产品: p?.name, 本金: yuan(loan.amountCents), 利息: yuan(interestCents), 合计扣款: yuan(totalCents) };
+      },
+    }),
+
+    listScfLoans: tool({
+      description: "查询我的供应链融资记录（在途/已结清）",
+      inputSchema: z.object({}),
+      execute: async () => {
+        const db = getDb();
+        const loans = await db.query.scfLoans.findMany({ orderBy: [desc(scfLoans.id)] });
+        const products = await db.query.scfProducts.findMany();
+        const pmap = Object.fromEntries(products.map((p) => [p.id, p.name]));
+        const statusText = { disbursed: "在途", repaid: "已结清", overdue: "逾期" } as const;
+        return loans.map((l) => ({
+          产品: pmap[l.productId], 金额: yuan(l.amountCents),
+          年化利率: `${(l.rateBps / 100).toFixed(2)}%`,
+          用途: l.purpose, 状态: statusText[l.status],
+          申请日: l.appliedAt.toISOString().slice(0, 10), 到期日: l.dueAt.toISOString().slice(0, 10),
+        }));
+      },
+    }),
+
+    // ================= 跨境电商：外贸一体化（物流/海关/退税） =================
+    listShipments: tool({
+      description: "查询外贸物流运单列表（承运商/平台/目的地/状态/最新轨迹）",
+      inputSchema: z.object({}),
+      execute: async () => {
+        const rows = await getDb().query.shipments.findMany({ orderBy: [desc(shipments.id)] });
+        const statusText = { label_created: "已建单待揽收", in_transit: "运输中", customs_clearance: "清关中", delivered: "已签收", exception: "异常" } as const;
+        return rows.map((s) => {
+          const ms = JSON.parse(s.milestones) as Array<{ time: string; text: string; location: string }>;
+          return {
+            单号: s.trackingNo, 承运商: s.carrier, 平台: s.platform, 目的地: s.destination,
+            货物: s.goodsDesc, 运费: yuan(s.freightCents), 状态: statusText[s.status],
+            最新轨迹: ms.length > 0 ? `${ms[ms.length - 1]!.time} ${ms[ms.length - 1]!.text}（${ms[ms.length - 1]!.location}）` : "-",
+          };
+        });
+      },
+    }),
+
+    trackShipment: tool({
+      description: "按运单号查询物流完整轨迹",
+      inputSchema: z.object({ trackingNo: z.string().describe("运单号，支持部分单号模糊查询") }),
+      execute: async ({ trackingNo }) => {
+        const rows = await getDb().query.shipments.findMany();
+        const kw = trackingNo.trim().toUpperCase();
+        const hit = rows.find((s) => s.trackingNo.toUpperCase() === kw) ?? rows.find((s) => s.trackingNo.toUpperCase().includes(kw));
+        if (!hit) return { 找到: false, 提示: `未找到运单「${trackingNo}」，当前运单号：${rows.map((r) => r.trackingNo).join("、")}` };
+        const ms = JSON.parse(hit.milestones) as Array<{ time: string; text: string; location: string }>;
+        return {
+          找到: true, 单号: hit.trackingNo, 承运商: hit.carrier, 目的地: hit.destination,
+          预计到达: hit.etaAt?.toISOString().slice(0, 10),
+          轨迹: ms.map((m) => `${m.time}｜${m.text}｜${m.location}`),
+        };
+      },
+    }),
+
+    listCustoms: tool({
+      description: "查询海关报关单状态（申报/查验/放行）及关联退税",
+      inputSchema: z.object({}),
+      execute: async () => {
+        const db = getDb();
+        const decls = await db.query.customsDeclarations.findMany({ orderBy: [desc(customsDeclarations.id)] });
+        const refunds = await db.query.taxRefunds.findMany();
+        const rmap = Object.fromEntries(refunds.map((r) => [r.declNo, r]));
+        const statusText = { declared: "已申报待审", inspecting: "海关查验中", released: "已放行", closed: "已结案" } as const;
+        return decls.map((d) => ({
+          报关单号: d.declNo, 口岸: d.port, 货物: d.goodsDesc,
+          货值: `$${(d.valueUsdCents / 100).toLocaleString()}`,
+          状态: statusText[d.status],
+          申报日: d.declaredAt.toISOString().slice(0, 10),
+          关联退税: rmap[d.declNo] ? `${rmap[d.declNo]!.period} 期 ${yuan(rmap[d.declNo]!.amountCents)}` : "-",
+        }));
+      },
+    }),
+
+    getTaxRefunds: tool({
+      description: "查询出口退税进度（申报期/金额/进度百分比/状态）",
+      inputSchema: z.object({}),
+      execute: async () => {
+        const rows = await getDb().query.taxRefunds.findMany({ orderBy: [desc(taxRefunds.id)] });
+        const statusText = { filing: "资料申报中", reviewing: "税务审核中", approved: "已核准待退库", paid: "已到账" } as const;
+        return rows.map((r) => ({
+          所属期: r.period, 退税金额: yuan(r.amountCents),
+          进度: `${r.progress}%`, 状态: statusText[r.status],
+          关联报关单: r.declNo ?? "-",
         }));
       },
     }),
